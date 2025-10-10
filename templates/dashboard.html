@@ -1,0 +1,369 @@
+{% extends "base.html" %}
+
+{% block head_extra %}
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/flatpickr/dist/flatpickr.min.css">
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/nouislider/distribute/nouislider.min.css">
+    <script src="https://cdn.jsdelivr.net/npm/flatpickr"></script>
+    <script src="https://cdn.jsdelivr.net/npm/nouislider/distribute/nouislider.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/wnumb/wNumb.min.js"></script>
+{% endblock %}
+
+{% block content %}
+<div id="loading-overlay">Carregando Dashboard...</div>
+
+<div class="dashboard-body" style="visibility: hidden;">
+    <aside class="sidebar">
+        <div class="sidebar-header">
+            <h3>Filtros</h3>
+            <button class="sidebar-toggle-btn" id="sidebar-toggle" title="Recolher/Expandir Filtros">
+                <i class="fa-solid fa-bars"></i>
+            </button>
+        </div>
+
+        <div id="filters-container-wrapper">
+            <div id="filters-container"></div>
+
+            <button id="apply-filters-btn">Aplicar Filtros</button>
+            <button id="reset-filters-btn">Resetar Filtros</button>
+            <!-- NOVO: limpar rapidamente checkboxes + filtros por clique dos gráficos -->
+            <button id="clear-selections-btn" title="Desmarca todos os checkboxes e limpa seleções dos gráficos">Limpar seleções</button>
+        </div>
+    </aside>
+
+    <div class="kpi-container">
+        <div class="kpi-card">
+            <div class="kpi-title">Total de Operações</div>
+            <div class="kpi-value" data-kpi="total_operacoes">--</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-title">Valor Total Liberado</div>
+            <div class="kpi-value" data-kpi="total_liberado">--</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-title">Ticket Médio</div>
+            <div class="kpi-value" data-kpi="ticket_medio">--</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-title">% Atraso na Carência</div>
+            <div class="kpi-value" data-kpi="perc_atraso_carencia">--</div>
+        </div>
+        <div class="kpi-card">
+            <div class="kpi-title">Média Score Previsto</div>
+            <div class="kpi-value" data-kpi="media_score">--</div>
+        </div>
+    </div>
+
+    <div class="main-content">
+        <div class="dashboard-grid">
+            <!-- TOPO: 2 gráficos -->
+            <div class="dashboard-card" id="card-score-gauge">
+                <div class="chart-loader"><div class="spinner"></div></div>
+                <div id="graph-score-gauge" data-chart-name="score"></div>
+            </div>
+
+            <div class="dashboard-card" id="card-finalidade-pie">
+                <div class="chart-loader"><div class="spinner"></div></div>
+                <div id="graph-finalidade-pie" data-chart-name="finalidade"></div>
+            </div>
+
+            <!-- BASE: CNAE (Setor) ocupando toda a linha -->
+            <div class="dashboard-card full-span" id="card-treemap-cnae">
+                <div class="chart-loader"><div class="spinner"></div></div>
+                <div id="graph-treemap-cnae-setor" data-chart-name="cnae_setor"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+    // --- STATE ---
+    let dashboardState = {
+        filters: {},            // filtros em uso (sidebar + cliques)
+        initialFilters: null    // snapshot para reset
+    };
+
+    // --- DOM ---
+    const elements = {
+        loadingOverlay: document.getElementById('loading-overlay'),
+        dashboardBody: document.querySelector('.dashboard-body'),
+        filtersContainer: document.getElementById('filters-container'),
+        applyBtn: document.getElementById('apply-filters-btn'),
+        resetBtn: document.getElementById('reset-filters-btn'),
+        clearBtn: document.getElementById('clear-selections-btn'),
+        sidebarToggle: document.getElementById('sidebar-toggle'),
+        kpiValues: document.querySelectorAll('[data-kpi]'),
+        charts: {
+            score: document.getElementById('graph-score-gauge'),
+            finalidade: document.getElementById('graph-finalidade-pie'),
+            cnae_setor: document.getElementById('graph-treemap-cnae-setor')
+        }
+    };
+
+    // --- Utils ---
+    const formatCurrency = (value) => {
+        const v = Number(value || 0);
+        return 'R$ ' + v.toFixed(2)
+            .replace('.', ',')
+            .replace(/\B(?=(\d{3})+(?!\d))/g, '.');
+    };
+
+    const animateCount = (element, start, end, duration) => {
+        let startTime = null;
+        const step = (currentTime) => {
+            if (!startTime) startTime = currentTime;
+            const progress = Math.min((currentTime - startTime) / duration, 1);
+            element.textContent = Math.floor(progress * (end - start) + start).toLocaleString('pt-BR');
+            if (progress < 1) window.requestAnimationFrame(step);
+        };
+        window.requestAnimationFrame(step);
+    };
+
+    // --- Render KPIs ---
+    const renderKPIs = (kpis) => {
+        elements.kpiValues.forEach(el => {
+            const key = el.getAttribute('data-kpi');
+            const newValue = kpis[key] || '--';
+            if (key === 'total_operacoes') {
+                const numeric = parseInt(String(newValue).replace(/\./g, ''), 10);
+                if (!isNaN(numeric)) {
+                    animateCount(el, 0, numeric, 800);
+                    return;
+                }
+            }
+            el.textContent = newValue;
+        });
+    };
+
+    // --- Render Chart ---
+    const renderChart = (chartName, graphJSON) => {
+        const chartDiv = elements.charts[chartName];
+        if (!chartDiv) return;
+
+        const loader = chartDiv.parentElement.querySelector('.chart-loader');
+        loader.classList.remove('visible');
+
+        chartDiv.innerHTML = '';
+        if (graphJSON && Object.keys(graphJSON).length > 0) {
+            const plot = JSON.parse(graphJSON);
+            Plotly.newPlot(chartDiv, plot.data, plot.layout, { responsive: true, displaylogo: false });
+
+            // Cliques de filtragem (somente onde faz sentido)
+            chartDiv.on('plotly_click', (ev) => {
+                if (chartName === 'score') return; // velocímetro não filtra
+
+                const p = ev.points && ev.points[0] ? ev.points[0] : null;
+                if (!p) return;
+
+                if (chartName === 'finalidade') {
+                    const label = p.label || (p.data && p.data.labels ? p.data.labels[p.pointNumber] : (p.x || p.y));
+                    if (!label) return;
+                    // toggle
+                    if (dashboardState.filters['clicked_finalidade'] === label) {
+                        delete dashboardState.filters['clicked_finalidade'];
+                    } else {
+                        dashboardState.filters['clicked_finalidade'] = label;
+                    }
+                    fetchData(true);
+                }
+
+                if (chartName === 'cnae_setor') {
+                    const label = p.label || p.id || (p.data && p.data.labels ? p.data.labels[p.pointNumber] : (p.x || p.y));
+                    if (!label) return;
+                    if (dashboardState.filters['clicked_cnae_setor'] === label) {
+                        delete dashboardState.filters['clicked_cnae_setor'];
+                    } else {
+                        dashboardState.filters['clicked_cnae_setor'] = label;
+                    }
+                    fetchData(true);
+                }
+            });
+
+        } else {
+            chartDiv.innerHTML = '<div style="text-align:center; padding-top: 50px;"><h4>Dados insuficientes.</h4></div>';
+        }
+    };
+
+    const renderAllCharts = (graphs) => {
+        renderChart('score', graphs.score_gauge);
+        renderChart('finalidade', graphs.finalidade_pie_chart);
+        renderChart('cnae_setor', graphs.treemap_cnae_setor);
+    };
+
+    // --- Render Filters (Sidebar) ---
+    const renderFilters = (filtersData) => {
+        if (!filtersData || Object.keys(filtersData).length === 0) {
+            elements.filtersContainer.innerHTML = '<p>Filtros não disponíveis.</p>';
+            return;
+        }
+        dashboardState.initialFilters = filtersData;
+
+        const moneyFormat = wNumb({ decimals: 0, thousand: '.', prefix: 'R$ ' });
+        const createCheckboxGroup = (items) => (items || [])
+            .map(item => `<label class="checkbox-item"><input type="checkbox" value="${item}" checked> ${item}</label>`)
+            .join('');
+
+        // IMPORTANTE: REMOVIDO o grupo "CNAE do Projeto (Setor)" (você pediu para não aparecer na sidebar)
+        // Mantidos: Período, Gerência, Porte, Subprograma, Finalidade, Valor
+        elements.filtersContainer.innerHTML = `
+            <div class="filter-group">
+                <h4>Período</h4>
+                <input type="text" id="date-range-picker">
+            </div>
+
+            ${filtersData.gerencias && filtersData.gerencias.length ? `
+            <div class="filter-group">
+                <h4>Gerência</h4>
+                <div class="checkbox-group" data-filter="gerencias">
+                    ${createCheckboxGroup(filtersData.gerencias)}
+                </div>
+            </div>` : ''}
+
+            <div class="filter-group">
+                <h4>Porte</h4>
+                <div class="checkbox-group" data-filter="portes">
+                    ${createCheckboxGroup(filtersData.portes)}
+                </div>
+            </div>
+
+            <div class="filter-group">
+                <h4>Subprograma</h4>
+                <div class="checkbox-group" data-filter="subprogramas">
+                    ${createCheckboxGroup(filtersData.subprogramas)}
+                </div>
+            </div>
+
+            <div class="filter-group">
+                <h4>Finalidade</h4>
+                <div class="checkbox-group" data-filter="finalidades">
+                    ${createCheckboxGroup(filtersData.finalidades)}
+                </div>
+            </div>
+
+            <div class="filter-group">
+                <h4>Valor Liberado</h4>
+                <div id="valor-slider"></div>
+                <!-- NOVO: mostra intervalo atual abaixo do slider -->
+                <div id="valor-range-current" class="range-display" style="margin-top:8px; font-size:13px; color:#666;">&nbsp;</div>
+            </div>
+        `;
+
+        // Date range
+        flatpickr("#date-range-picker", {
+            mode: "range",
+            dateFormat: "Y-m-d",
+            defaultDate: [filtersData.min_date, filtersData.max_date]
+        });
+
+        // Slider
+        const sliderEl = document.getElementById('valor-slider');
+        noUiSlider.create(sliderEl, {
+            start: [filtersData.min_valor, filtersData.max_valor],
+            connect: true,
+            range: { 'min': filtersData.min_valor, 'max': filtersData.max_valor },
+            format: moneyFormat
+        });
+
+        // Atualiza o display do intervalo enquanto arrasta
+        const rangeDisplay = document.getElementById('valor-range-current');
+        const updateRangeDisplay = () => {
+            const vals = sliderEl.noUiSlider.get();
+            const min = Array.isArray(vals) ? vals[0] : vals;
+            const max = Array.isArray(vals) ? vals[1] : vals;
+            rangeDisplay.textContent = `${min} — ${max}`;
+        };
+        sliderEl.noUiSlider.on('update', updateRangeDisplay);
+        updateRangeDisplay();
+    };
+
+    // --- Data Fetch ---
+    const fetchData = async (isUpdate = false) => {
+        Object.values(elements.charts).forEach(chart => {
+            if (!chart) return;
+            const loader = chart.parentElement.querySelector('.chart-loader');
+            loader && loader.classList.add('visible');
+        });
+
+        if (!isUpdate) elements.loadingOverlay.style.display = 'flex';
+
+        try {
+            const response = await fetch('/api/dashboard_data', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(isUpdate ? dashboardState.filters : {})
+            });
+            if (!response.ok) throw new Error(`Erro: ${response.status}`);
+
+            const data = await response.json();
+
+            if (!isUpdate) renderFilters(data.filters);
+            renderKPIs(data.kpis);
+            renderAllCharts(data.graphs);
+
+        } catch (err) {
+            console.error('Falha ao carregar dados:', err);
+            elements.dashboardBody.innerHTML = `<p style="color:red; text-align:center;">Erro ao carregar o dashboard: ${err.message}</p>`;
+        } finally {
+            if (!isUpdate) {
+                elements.loadingOverlay.style.display = 'none';
+                elements.dashboardBody.style.visibility = 'visible';
+            }
+        }
+    };
+
+    // --- Eventos ---
+    elements.applyBtn.addEventListener('click', () => {
+        const sidebarFilters = {};
+
+        // período
+        const fp = document.getElementById('date-range-picker')._flatpickr;
+        sidebarFilters.start_date = fp.selectedDates[0]?.toISOString().split('T')[0];
+        sidebarFilters.end_date = fp.selectedDates[1]?.toISOString().split('T')[0];
+
+        // valor
+        const slider = document.getElementById('valor-slider');
+        if (slider && slider.noUiSlider) {
+            sidebarFilters.valor_range = slider.noUiSlider.get();
+        }
+
+        // checkboxes: gerências, portes, subprogramas, finalidades
+        document.querySelectorAll('.checkbox-group').forEach(group => {
+            const key = group.dataset.filter;
+            sidebarFilters[key] = Array.from(group.querySelectorAll('input:checked')).map(el => el.value);
+        });
+
+        // Mantém filtros de cliques (finalidade, cnae_setor) e atualiza com a sidebar
+        dashboardState.filters = { ...dashboardState.filters, ...sidebarFilters };
+        fetchData(true);
+    });
+
+    elements.resetBtn.addEventListener('click', () => {
+        dashboardState.filters = {};
+        renderFilters(dashboardState.initialFilters);
+        fetchData(true);
+    });
+
+    // NOVO: limpar rapidamente seleções (checkboxes) e filtros por clique dos gráficos
+    elements.clearBtn.addEventListener('click', () => {
+        // desmarca todos os checkboxes
+        document.querySelectorAll('.checkbox-group input[type="checkbox"]').forEach(cb => cb.checked = false);
+        // limpa seleções por clique (finalidade e cnae_setor)
+        delete dashboardState.filters.clicked_finalidade;
+        delete dashboardState.filters.clicked_cnae_setor;
+        // deixa datas e slider como estão; você decide quando clicar em Aplicar
+    });
+
+    elements.sidebarToggle.addEventListener('click', () => {
+        elements.dashboardBody.classList.toggle('sidebar-collapsed');
+        setTimeout(() => {
+            Object.values(elements.charts).forEach(chartDiv => {
+                if (chartDiv) Plotly.Plots.resize(chartDiv);
+            });
+        }, 400);
+    });
+
+    // Inicial
+    fetchData();
+});
+</script>
+{% endblock %}

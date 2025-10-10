@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="pt-br">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Painel Preditivo - GT IA</title>
+
+    <!-- Plotly -->
+    <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+
+    <!-- CSS próprio -->
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+
+    <!-- jQuery + DataTables -->
+    <script src="https://code.jquery.com/jquery-3.7.1.min.js"
+            integrity="sha256-/JqT3SQfawRcv/BIHPThkBvs0OEvtFFmqPF/lYI/Cxo="
+            crossorigin="anonymous"></script>
+    <link  href="https://cdn.datatables.net/1.13.8/css/jquery.dataTables.min.css" rel="stylesheet"/>
+    <script src="https://cdn.datatables.net/1.13.8/js/jquery.dataTables.min.js"></script>
+
+    {% block head_extra %}{% endblock %}
+</head>
+<body>
+    <div class="container">
+
+        <!-- Cabeçalho alinhado: título + logo -->
+        <header class="main-header">
+            <h1 class="page-title">Painel Preditivo - GT IA</h1>
+            <img src="{{ url_for('static', filename='badesc_logo.png') }}"
+     alt="Logo Badesc"
+     class="logo"
+     style="height: 180px; width: auto;" />
+        </header>
+
+        <nav class="navigation">
+            <ul>
+                <li><a href="/" class="{{ 'active' if active_page == 'tabela' else '' }}">Tabela de Dados</a></li>
+                <li><a href="/dashboard" class="{{ 'active' if active_page == 'dashboard' else '' }}">Dashboard</a></li>
+            </ul>
+        </nav>
+
+        <main class="main-content-area">
+            {% block content %}{% endblock %}
+        </main>
+    </div>
+
+    {% block scripts %}{% endblock %}
+</body>
+</html>

@@ -1,0 +1,238 @@
+{% extends "base.html" %}
+
+{% block content %}
+<div class="table-header">
+    <h1>Tabela de Operações</h1>
+    <div class="kpi-group">
+        <div class="total-operacoes"><strong>Total de Operações:</strong> {{ total_operacoes }}</div>
+        <div class="total-operacoes"><strong>Média Score Previsto:</strong> {{ media_score }}</div>
+    </div>
+</div>
+
+{% if limited %}
+<div class="alert-info" style="margin-bottom:16px;">
+    Exibindo <strong>{{ display_rows|int }}</strong> de <strong>{{ total_rows|int }}</strong> linhas
+    (limite atual: {{ table_max_rows|int }}).&nbsp;
+    <a href="/?all=1">Ver tudo</a>
+</div>
+{% endif %}
+
+<div class="table-controls">
+    <div class="table-controls-left">
+        <button id="config-button" class="btn btn-primary">Configurar Colunas</button>
+        <div class="font-controls">
+            <button id="decrease-font" class="btn btn-secondary font-btn">-</button>
+            <button id="increase-font" class="btn btn-secondary font-btn">+</button>
+        </div>
+    </div>
+    <div class="table-controls-right">
+        <div class="search-container">
+            <select id="search-column-select" class="form-control"></select>
+            <input type="text" id="search-input" class="form-control" placeholder="Buscar na coluna selecionada...">
+        </div>
+    </div>
+</div>
+
+<div id="no-columns-message" class="alert-info" style="display: none;">
+    Nenhuma coluna selecionada. Clique em <strong>"Configurar Colunas"</strong> para escolher os dados que deseja visualizar.
+</div>
+
+<div class="table-container" aria-busy="true">
+    <table id="data-table" class="display" style="width:100%">
+        <thead>
+            <tr>
+                {% for col in cabecalho %}
+                    <th data-column-name="{{ col }}">{{ col }}</th>
+                {% endfor %}
+            </tr>
+        </thead>
+        <tbody>
+            {% for linha in dados %}
+            <tr>
+                {% for col in cabecalho %}
+                    <td data-column-name="{{ col }}">{{ linha[col] }}</td>
+                {% endfor %}
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</div>
+
+<!-- MODAL -->
+<div id="config-modal" class="modal" aria-hidden="true" role="dialog" aria-labelledby="config-title">
+    <div class="modal-content">
+        <div class="modal-header">
+            <h2 id="config-title">Configurar Colunas Visíveis</h2>
+        </div>
+        <div class="modal-body">
+            <div class="select-all-container">
+                <label>
+                    <input type="checkbox" id="select-all-columns-checkbox">
+                    <strong>Marcar/Desmarcar Todas</strong>
+                </label>
+            </div>
+            <div id="column-selection" class="column-selection-grid"></div>
+        </div>
+        <div class="modal-footer">
+            <button id="reset-columns-button" class="btn btn-secondary">Limpar Seleção</button>
+            <button id="apply-columns-button" class="btn btn-primary">Aplicar</button>
+            <button id="cancel-button" class="btn btn-secondary">Cancelar</button>
+        </div>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+(function() {
+  document.addEventListener('DOMContentLoaded', function() {
+    try { fetch('/__telemetry', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({type:'boot', page:'tabela'})}); } catch(_) {}
+
+    const STORAGE_KEY = 'visibleColumns';
+    const allColumns = {{ cabecalho|tojson }};
+    const noColumnsMessage = $('#no-columns-message');
+    const tableContainer = document.querySelector('.table-container');
+
+    // ---- DataTables com foco em performance ----
+    let table = null;
+    // Deixa o navegador pintar a página primeiro, depois inicializa o DataTables.
+    requestAnimationFrame(() => {
+      try {
+        table = $('#data-table').DataTable({
+          dom: 't',
+          paging: true,           // ativa paginação (evita carregar tudo de uma vez no viewport)
+          pageLength: 50,
+          lengthMenu: [[50, 100, 250, 500], [50, 100, 250, 500]],
+          deferRender: true,      // cria os nós só quando necessários
+          autoWidth: false,       // evita cálculos caros de largura
+          ordering: true,
+          processing: true        // mostra status enquanto pagina/busca
+        });
+      } catch (e) {
+        console.warn('DataTables falhou, seguindo sem ele:', e);
+      } finally {
+        tableContainer.setAttribute('aria-busy', 'false');
+      }
+    });
+
+    function getVisibleColumns() {
+      try {
+        const stored = localStorage.getItem(STORAGE_KEY);
+        return stored ? JSON.parse(stored) : allColumns.slice();
+      } catch(_) { return allColumns.slice(); }
+    }
+    function saveVisibleColumns(cols) {
+      try { localStorage.setItem(STORAGE_KEY, JSON.stringify(cols)); } catch(_) {}
+    }
+
+    function applyColumnVisibility() {
+      const visible = getVisibleColumns();
+      if (visible.length === 0) { noColumnsMessage.show(); } else { noColumnsMessage.hide(); }
+      if (table) {
+        table.columns().every(function (idx) {
+          const colName = allColumns[idx];
+          this.visible(visible.includes(colName));
+        });
+      }
+      populateSearchDropdown(visible);
+    }
+
+    function populateSearchDropdown(visibleColumns) {
+      const sel = $('#search-column-select');
+      const current = sel.val();
+      sel.empty();
+      visibleColumns.forEach(c => sel.append(new Option(c, c)));
+      if (visibleColumns.includes(current)) sel.val(current);
+    }
+
+    // --- Busca por coluna (com DataTables) ---
+    function filterTable() {
+      if (!table) return;
+      const term = $('#search-input').val();
+      const colName = $('#search-column-select').val();
+      const idx = allColumns.indexOf(colName);
+      table.columns().search('').draw();
+      if (idx > -1) table.column(idx).search(term, false, true).draw();
+    }
+
+    // ---- Fonte + visibilidade inicial ---
+    const tableEl = document.getElementById('data-table');
+    $('#increase-font').on('click', () => {
+      const cs = parseFloat(getComputedStyle(tableEl).getPropertyValue('font-size'));
+      tableEl.style.fontSize = (cs + 1) + 'px';
+    });
+    $('#decrease-font').on('click', () => {
+      const cs = parseFloat(getComputedStyle(tableEl).getPropertyValue('font-size'));
+      if (cs > 10) tableEl.style.fontSize = (cs - 1) + 'px';
+    });
+
+    // -------- Modal (independente do DataTables) --------
+    const configModal = document.getElementById('config-modal');
+    const columnSelectionDiv = document.getElementById('column-selection');
+    const selectAllCheckbox = document.getElementById('select-all-columns-checkbox');
+    const btnOpen = document.getElementById('config-button');
+    const btnApply = document.getElementById('apply-columns-button');
+    const btnReset = document.getElementById('reset-columns-button');
+    const btnCancel = document.getElementById('cancel-button');
+
+    function openModal() {
+      configModal.style.display = 'block';
+      configModal.setAttribute('aria-hidden', 'false');
+      configModal.style.zIndex = '1001';
+    }
+    function closeModal() {
+      configModal.style.display = 'none';
+      configModal.setAttribute('aria-hidden', 'true');
+    }
+    function updateSelectAllState() {
+      const allCbs = columnSelectionDiv.querySelectorAll('input[type="checkbox"]');
+      const checked = columnSelectionDiv.querySelectorAll('input[type="checkbox"]:checked').length;
+      if (allCbs.length > 0 && checked === allCbs.length) {
+        selectAllCheckbox.checked = true; selectAllCheckbox.indeterminate = false;
+      } else if (checked === 0) {
+        selectAllCheckbox.checked = false; selectAllCheckbox.indeterminate = false;
+      } else {
+        selectAllCheckbox.indeterminate = true;
+      }
+    }
+    function initializeColumnSelector() {
+      columnSelectionDiv.innerHTML = '';
+      const visible = getVisibleColumns();
+      allColumns.forEach(col => {
+        const isChecked = visible.includes(col);
+        columnSelectionDiv.insertAdjacentHTML('beforeend',
+          `<label><input type="checkbox" value="${col}" ${isChecked ? 'checked' : ''}> ${col}</label>`);
+      });
+      columnSelectionDiv.querySelectorAll('input[type="checkbox"]').forEach(cb => {
+        cb.addEventListener('change', updateSelectAllState);
+      });
+      updateSelectAllState();
+    }
+
+    if (btnOpen)   btnOpen.addEventListener('click', () => { initializeColumnSelector(); openModal(); });
+    if (btnApply)  btnApply.addEventListener('click', () => {
+      const selected = Array.from(columnSelectionDiv.querySelectorAll('input:checked')).map(i => i.value);
+      saveVisibleColumns(selected);
+      applyColumnVisibility();
+      closeModal();
+    });
+    if (btnReset)  btnReset.addEventListener('click', () => {
+      saveVisibleColumns([]); applyColumnVisibility(); closeModal();
+    });
+    if (btnCancel) btnCancel.addEventListener('click', closeModal);
+    window.addEventListener('keydown', (e) => { if (e.key === 'Escape') closeModal(); });
+    window.addEventListener('click', (e) => { if (e.target === configModal) closeModal(); });
+
+    // ---- Busca events ----
+    $('#search-input').on('input', filterTable);
+    $('#search-column-select').on('change', filterTable);
+
+    // Visibilidade inicial
+    applyColumnVisibility();
+    $('#data-table').css('visibility', 'visible');
+
+    try { fetch('/__telemetry', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({type:'ready', page:'tabela'})}); } catch(_) {}
+  });
+})();
+</script>
+{% endblock %}
